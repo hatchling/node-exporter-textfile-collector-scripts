@@ -1,4 +1,9 @@
-#!/bin/bash
+#!/usr/local/bin/bash
+# Frankenstein script mashup from:
+# https://github.com/prometheus/node_exporter/pull/1218/files
+#  &
+# https://github.com/janw/node-exporter-textfile-collector-scripts/blob/master/smartmon.sh
+#
 # Script informed by the collectd monitoring script for smartmontools (using smartctl)
 # by Samuel B. <samuel_._behan_(at)_dob_._sk> (c) 2012
 # source at: http://devel.dob.sk/collectd-scripts/
@@ -9,15 +14,17 @@
 
 # Formatting done via shfmt -i 2
 # https://github.com/mvdan/sh
+set -euo pipefail
+IFS=$'\n\t'
 
 parse_smartctl_attributes_awk="$(
   cat <<'SMARTCTLAWK'
 $1 ~ /^ *[0-9]+$/ && $2 ~ /^[a-zA-Z0-9_-]+$/ {
   gsub(/-/, "_");
-  printf "%s_value{%s,smart_id=\"%s\"} %d\n", $2, labels, $1, $4
-  printf "%s_worst{%s,smart_id=\"%s\"} %d\n", $2, labels, $1, $5
-  printf "%s_threshold{%s,smart_id=\"%s\"} %d\n", $2, labels, $1, $6
-  printf "%s_raw_value{%s,smart_id=\"%s\"} %e\n", $2, labels, $1, $10
+  printf "%s_value{%s,smart_id=\"%s\"} %d\n", tolower($2), labels, $1, $4
+  printf "%s_worst{%s,smart_id=\"%s\"} %d\n", tolower($2), labels, $1, $5
+  printf "%s_threshold{%s,smart_id=\"%s\"} %d\n", tolower($2), labels, $1, $6
+  printf "%s_raw_value{%s,smart_id=\"%s\"} %e\n", tolower($2), labels, $1, $10
 }
 SMARTCTLAWK
 )"
@@ -64,49 +71,44 @@ workld_media_wear_indic
 workload_minutes
 SMARTMONATTRS
 )"
-smartmon_attrs="$(echo "${smartmon_attrs}" | xargs | tr ' ' '|')"
+smartmon_attrs="$(echo ${smartmon_attrs} | xargs | tr ' ' '|')"
 
 parse_smartctl_attributes() {
-  local disk="$1"
-  local disk_type="$2"
-  local labels="disk=\"${disk}\",type=\"${disk_type}\""
-  sed 's/^ \+//g' |
+  local labels="$1"
+  local vars="$(echo "${smartmon_attrs}" | xargs | tr ' ' '|')"
+  sed 's/^[[:space:]]*//g' |
     awk -v labels="${labels}" "${parse_smartctl_attributes_awk}" 2>/dev/null |
-    tr '[:upper:]' '[:lower:]' |
-    grep -E "(${smartmon_attrs})"
+    grep -iE "(${smartmon_attrs})"
 }
 
 parse_smartctl_scsi_attributes() {
-  local disk="$1"
-  local disk_type="$2"
-  local labels="disk=\"${disk}\",type=\"${disk_type}\""
-  while read -r line; do
-    attr_type="$(echo "${line}" | tr '=' ':' | cut -f1 -d: | sed 's/^ \+//g' | tr ' ' '_')"
-    attr_value="$(echo "${line}" | tr '=' ':' | cut -f2 -d: | sed 's/^ \+//g')"
+  local labels="$1"
+  while read line; do
+    attr_type="$(echo "${line}" | tr '=' ':' | cut -f1 -d: | sed 's/^[[:space:]]*//g' | tr ' ' '_')"
+    attr_value="$(echo "${line}" | tr '=' ':' | cut -f2 -d: | sed 's/^[[:space:]]*//g')"
     case "${attr_type}" in
     number_of_hours_powered_up_) power_on="$(echo "${attr_value}" | awk '{ printf "%e\n", $1 }')" ;;
-    Current_Drive_Temperature) temp_cel="$(echo "${attr_value}" | cut -f1 -d' ' | awk '{ printf "%e\n", $1 }')" ;;
-    Blocks_sent_to_initiator_) lbas_read="$(echo "${attr_value}" | awk '{ printf "%e\n", $1 }')" ;;
-    Blocks_received_from_initiator_) lbas_written="$(echo "${attr_value}" | awk '{ printf "%e\n", $1 }')" ;;
-    Accumulated_start-stop_cycles) power_cycle="$(echo "${attr_value}" | awk '{ printf "%e\n", $1 }')" ;;
-    Elements_in_grown_defect_list) grown_defects="$(echo "${attr_value}" | awk '{ printf "%e\n", $1 }')" ;;
+    Current_Drive_Temperature) temp_cel="$(echo ${attr_value} | cut -f1 -d' ' | awk '{ printf "%e\n", $1 }')" ;;
+    Blocks_sent_to_initiator_) lbas_read="$(echo ${attr_value} | awk '{ printf "%e\n", $1 }')" ;;
+    Blocks_received_from_initiator_) lbas_written="$(echo ${attr_value} | awk '{ printf "%e\n", $1 }')" ;;
+    Accumulated_start-stop_cycles) power_cycle="$(echo ${attr_value} | awk '{ printf "%e\n", $1 }')" ;;
+    Elements_in_grown_defect_list) grown_defects="$(echo ${attr_value} | awk '{ printf "%e\n", $1 }')" ;;
     esac
   done
-  [ -n "$power_on" ] && echo "power_on_hours_raw_value{${labels},smart_id=\"9\"} ${power_on}"
-  [ -n "$temp_cel" ] && echo "temperature_celsius_raw_value{${labels},smart_id=\"194\"} ${temp_cel}"
-  [ -n "$lbas_read" ] && echo "total_lbas_read_raw_value{${labels},smart_id=\"242\"} ${lbas_read}"
-  [ -n "$lbas_written" ] && echo "total_lbas_written_raw_value{${labels},smart_id=\"242\"} ${lbas_written}"
-  [ -n "$power_cycle" ] && echo "power_cycle_count_raw_value{${labels},smart_id=\"12\"} ${power_cycle}"
-  [ -n "$grown_defects" ] && echo "grown_defects_count_raw_value{${labels},smart_id=\"12\"} ${grown_defects}"
+  [ ! -z "$power_on" ] && echo "power_on_hours_raw_value{${labels},smart_id=\"9\"} ${power_on}"
+  [ ! -z "$temp_cel" ] && echo "temperature_celsius_raw_value{${labels},smart_id=\"194\"} ${temp_cel}"
+  [ ! -z "$lbas_read" ] && echo "total_lbas_read_raw_value{${labels},smart_id=\"242\"} ${lbas_read}"
+  [ ! -z "$lbas_written" ] && echo "total_lbas_written_raw_value{${labels},smart_id=\"242\"} ${lbas_written}"
+  [ ! -z "$power_cycle" ] && echo "power_cycle_count_raw_value{${labels},smart_id=\"12\"} ${power_cycle}"
+  [ ! -z "$grown_defects" ] && echo "grown_defects_count_raw_value{${labels},smart_id=\"12\"} ${grown_defects}"
 }
 
-parse_smartctl_info() {
-  local -i smart_available=0 smart_enabled=0 smart_healthy=
+extract_labels_from_smartctl_info() {
   local disk="$1" disk_type="$2"
-  local model_family='' device_model='' serial_number='' fw_version='' vendor='' product='' revision='' lun_id=''
-  while read -r line; do
+  local model_family='<None>' device_model='<None>' serial_number='<None>' fw_version='<None>' vendor='<None>' product='<None>' revision='<None>' lun_id='<None>'
+  while read line; do
     info_type="$(echo "${line}" | cut -f1 -d: | tr ' ' '_')"
-    info_value="$(echo "${line}" | cut -f2- -d: | sed 's/^ \+//g' | sed 's/"/\\"/')"
+    info_value="$(echo "${line}" | cut -f2- -d: | sed 's/^[[:space:]]*//g' | sed 's/"/\\"/')"
     case "${info_type}" in
     Model_Family) model_family="${info_value}" ;;
     Device_Model) device_model="${info_value}" ;;
@@ -117,29 +119,63 @@ parse_smartctl_info() {
     Revision) revision="${info_value}" ;;
     Logical_Unit_id) lun_id="${info_value}" ;;
     esac
+  done
+  echo "disk=\"${disk}\",type=\"${disk_type}\",vendor=\"${vendor}\",product=\"${product}\",revision=\"${revision}\",lun_id=\"${lun_id}\",model_family=\"${model_family}\",device_model=\"${device_model}\",serial_number=\"${serial_number}\",firmware_version=\"${fw_version}\""
+}
+
+parse_smartctl_info() {
+  local -i smart_available=0 smart_enabled=0 smart_healthy=0 sector_size_log=512 sector_size_phy=512
+  local labels="$1"
+  while read line; do
+    info_type="$(echo "${line}" | cut -f1 -d: | tr ' ' '_')"
+    info_value="$(echo "${line}" | cut -f2- -d: | sed 's/^[[:space:]]*//g' | sed 's/"/\\"/')"
     if [[ "${info_type}" == 'SMART_support_is' ]]; then
       case "${info_value:0:7}" in
-      Enabled) smart_available=1; smart_enabled=1 ;;
-      Availab) smart_available=1; smart_enabled=0 ;;
-      Unavail) smart_available=0; smart_enabled=0 ;;
+      Enabled) smart_enabled=1 ;;
+      Availab) smart_available=1 ;;
+      Unavail) smart_available=0 ;;
       esac
     fi
     if [[ "${info_type}" == 'SMART_overall-health_self-assessment_test_result' ]]; then
       case "${info_value:0:6}" in
       PASSED) smart_healthy=1 ;;
-      *) smart_healthy=0 ;;
       esac
     elif [[ "${info_type}" == 'SMART_Health_Status' ]]; then
       case "${info_value:0:2}" in
       OK) smart_healthy=1 ;;
-      *) smart_healthy=0 ;;
       esac
+    elif [[ "${info_type}" == 'Sector_Size' ]]; then
+        sector_size_log=$(echo "$info_value" | cut -d' ' -f1)
+        sector_size_phy=$(echo "$info_value" | cut -d' ' -f1)
+    elif [[ "${info_type}" == 'Sector_Sizes' ]]; then
+        sector_size_log="$(echo "$info_value" | cut -d' ' -f1)"
+        sector_size_phy="$(echo "$info_value" | cut -d' ' -f4)"
     fi
   done
-  echo "device_info{disk=\"${disk}\",type=\"${disk_type}\",vendor=\"${vendor}\",product=\"${product}\",revision=\"${revision}\",lun_id=\"${lun_id}\",model_family=\"${model_family}\",device_model=\"${device_model}\",serial_number=\"${serial_number}\",firmware_version=\"${fw_version}\"} 1"
-  echo "device_smart_available{disk=\"${disk}\",type=\"${disk_type}\"} ${smart_available}"
-  echo "device_smart_enabled{disk=\"${disk}\",type=\"${disk_type}\"} ${smart_enabled}"
-  [[ "${smart_healthy}" != "" ]] && echo "device_smart_healthy{disk=\"${disk}\",type=\"${disk_type}\"} ${smart_healthy}"
+  echo "device_smart_available{${labels}} ${smart_available}"
+  echo "device_smart_enabled{${labels}} ${smart_enabled}"
+  echo "device_smart_healthy{${labels}} ${smart_healthy}"
+  echo "device_sector_size_logical{${labels}} ${sector_size_log}"
+  echo "device_sector_size_physical{${labels}} ${sector_size_phy}"
+}
+
+parse_smartctl_returnvalue() {
+  local returnvalue=$1
+  local labels=$2
+
+  for ((i=0; i<8; i++)); do
+    case $i in
+      0) echo -n "smartctl_statusbit_commandline_not_parsed{${labels}} " ;;
+      1) echo -n "smartctl_statusbit_device_open_failed{${labels}} " ;;
+      2) echo -n "smartctl_statusbit_device_command_failed{${labels}} " ;;
+      3) echo -n "smartctl_statusbit_disk_failing{${labels}} " ;;
+      4) echo -n "smartctl_statusbit_prefail_attributes_below_thresh{${labels}} " ;;
+      5) echo -n "smartctl_statusbit_disk_ok_previous_prefail_attributes{${labels}} " ;;
+      6) echo -n "smartctl_statusbit_device_error_log_has_errors{${labels}} " ;;
+      7) echo -n "smartctl_statusbit_device_selftest_log_has_errors{${labels}} " ;;
+    esac
+    echo "$((status & 2**i && 1))"
+  done
 }
 
 output_format_awk="$(
@@ -159,7 +195,7 @@ format_output() {
     awk -F'{' "${output_format_awk}"
 }
 
-smartctl_version="$(/usr/sbin/smartctl -V | head -n1 | awk '$1 == "smartctl" {print $2}')"
+smartctl_version="$(smartctl -V | head -n1 | awk '$1 == "smartctl" {print $2}')"
 
 echo "smartctl_version{version=\"${smartctl_version}\"} 1" | format_output
 
@@ -167,29 +203,41 @@ if [[ "$(expr "${smartctl_version}" : '\([0-9]*\)\..*')" -lt 6 ]]; then
   exit
 fi
 
-device_list="$(/usr/sbin/smartctl --scan-open | awk '/^\/dev/{print $1 "|" $3}')"
+device_list="$(smartctl --scan-open | awk '/^\/dev/{print $1 "|" $3}')"
 
 for device in ${device_list}; do
-  disk="$(echo "${device}" | cut -f1 -d'|')"
-  type="$(echo "${device}" | cut -f2 -d'|')"
+  disk="$(echo ${device} | cut -f1 -d'|')"
+  type="$(echo ${device} | cut -f2 -d'|')"
   active=1
   echo "smartctl_run{disk=\"${disk}\",type=\"${type}\"}" "$(TZ=UTC date '+%s')"
   # Check if the device is in a low-power mode
-  /usr/sbin/smartctl -n standby -d "${type}" "${disk}" > /dev/null || active=0
+  smartctl -n standby -d "${type}" "${disk}" > /dev/null || active=0
   echo "device_active{disk=\"${disk}\",type=\"${type}\"}" "${active}"
   # Skip further metrics to prevent the disk from spinning up
   test ${active} -eq 0 && continue
-  # Get the SMART information and health
-  /usr/sbin/smartctl -i -H -d "${type}" "${disk}" | parse_smartctl_info "${disk}" "${type}"
+
+  # Get the SMART information and health,
+  # Allow non-zero exit code and store it
+  set +e
+  smart_info="$(smartctl -i -H -d "${type}" "${disk}")"
+  status=$?
+  set -e
+
+  disk_labels="$(echo "$smart_info" | extract_labels_from_smartctl_info "${disk}" "${type}")"
+  echo "$smart_info" | parse_smartctl_info "${disk_labels}"
+
+  # Parse out smartctl's exit code into separate metrics
+  parse_smartctl_returnvalue $status "${disk_labels}"
+
   # Get the SMART attributes
   case ${type} in
-  sat) /usr/sbin/smartctl -A -d "${type}" "${disk}" | parse_smartctl_attributes "${disk}" "${type}" ;;
-  sat+megaraid*) /usr/sbin/smartctl -A -d "${type}" "${disk}" | parse_smartctl_attributes "${disk}" "${type}" ;;
-  scsi) /usr/sbin/smartctl -A -d "${type}" "${disk}" | parse_smartctl_scsi_attributes "${disk}" "${type}" ;;
-  megaraid*) /usr/sbin/smartctl -A -d "${type}" "${disk}" | parse_smartctl_scsi_attributes "${disk}" "${type}" ;;
-  nvme*) /usr/sbin/smartctl -A -d "${type}" "${disk}" | parse_smartctl_scsi_attributes "${disk}" "${type}" ;;
+  atacam) smartctl -A -d "${type}" "${disk}" | parse_smartctl_attributes "${disk_labels}" || true ;;
+  sat) smartctl -A -d "${type}" "${disk}" | parse_smartctl_attributes "${disk_labels}" || true ;;
+  sat+megaraid*) smartctl -A -d "${type}" "${disk}" | parse_smartctl_attributes "${disk_labels}" || true ;;
+  scsi) smartctl -A -d "${type}" "${disk}" | parse_smartctl_scsi_attributes "${disk_labels}" || true ;;
+  megaraid*) smartctl -A -d "${type}" "${disk}" | parse_smartctl_scsi_attributes "${disk_labels}" || true ;;
   *)
-      (>&2 echo "disk type is not sat, scsi, nvme or megaraid but ${type}")
+    echo "disk type is not sat, scsi or megaraid but ${type}"
     exit
     ;;
   esac
